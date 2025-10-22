@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Racer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', 'Helvetica Neue', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #fff;
+            overflow: hidden; /* Hide scrollbars */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI Elements */
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 2rem;
+            font-weight: 700;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
+            pointer-events: none; /* Allow clicks to go through to canvas if needed */
+        }
+        
+        #timer, #distance {
+            background-color: rgba(0, 0, 0, 0.3);
+            padding: 10px 20px;
+            border-radius: 10px;
+        }
+
+        /* Message Overlay (for Start/Game Over) */
+        #message-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            text-align: center;
+            z-index: 10;
+        }
+
+        #message-overlay h1 {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        #message-overlay p {
+            font-size: 1.5rem;
+            margin: 5px 0;
+            max-width: 400px;
+            line-height: 1.5;
+        }
+
+        #start-button {
+            font-size: 1.5rem;
+            font-weight: 700;
+            padding: 15px 30px;
+            margin-top: 30px;
+            background-color: #4CAF50; /* Green */
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s ease-in-out;
+        }
+
+        #start-button:hover {
+            background-color: #45a049;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        /* Hide overlay when game is active */
+        #message-overlay.hidden {
+            display: none;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <canvas id="canvas"></canvas>
+        
+        <!-- Top UI -->
+        <div id="ui-container">
+            <div id="timer">Time: 60</div>
+            <div id="distance">Distance: 0 m</div>
+        </div>
+
+        <!-- Start/Game Over Overlay -->
+        <div id="message-overlay">
+            <h1>3D Racer</h1>
+            <p><strong>Controls:</strong><br>
+                <strong>W:</strong> Accelerate<br>
+                <strong>S:</strong> Brake / Reverse<br>
+                <strong>A:</strong> Steer Left<br>
+                <strong>D:</strong> Steer Right
+            </p>
+            <p>Drive as far as you can in 60 seconds. Avoid the red obstacles!<br><strong>The faster you go, the harder it is to turn.</strong></p>
+            <button id="start-button">Start Game</button>
+        </div>
+    </div>
+
+    <!-- Load three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script type="module">
+        // --- Three.js Scene Setup ---
+        let scene, camera, renderer, clock;
+        let car, ground;
+        let obstacles = [];
+        let roadLines = [];
+        const obstacleCount = 20;
+        const roadLineCount = 30;
+
+        // --- Game State ---
+        const gameState = {
+            speed: 0,
+            distance: 0,
+            timeLeft: 60.0,
+            isGameRunning: false,
+            isGameOver: false,
+        };
+
+        // --- Game Constants ---
+        const maxSpeed = 300;
+        const acceleration = 60;
+        const braking = 100;
+        const drag = 20; // Natural deceleration
+        const baseTurnRate = 8.0; // units per second at speed 0
+        const turnDamping = 0.0003; // How much speed affects turning
+        const roadWidth = 40;
+        const roadLength = 400; // Visual length of the road segments
+
+        // --- Input State ---
+        const keys = {
+            w: false,
+            s: false,
+            a: false,
+            d: false,
+        };
+
+        // --- UI Elements ---
+        const timerElement = document.getElementById('timer');
+        const distanceElement = document.getElementById('distance');
+        const messageOverlay = document.getElementById('message-overlay');
+        const messageTitle = messageOverlay.querySelector('h1');
+        const messageText = messageOverlay.querySelector('p');
+        const startButton = document.getElementById('start-button');
+
+        // --- Initialization ---
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Sky blue
+            scene.fog = new THREE.Fog(0x87CEEB, 100, 300); // Fog for depth
+
+            // Clock
+            clock = new THREE.Clock();
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 6, 12); // Behind and above the car
+            camera.lookAt(0, 2, 0); // Look slightly down at the car's future position
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+
+            // Lights
+            const ambientLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+            dirLight.position.set(100, 100, 50);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 30;
+            dirLight.shadow.camera.bottom = -30;
+            dirLight.shadow.camera.left = -30;
+            dirLight.shadow.camera.right = 30;
+            scene.add(dirLight);
+
+            // Ground
+            const groundGeometry = new THREE.PlaneGeometry(roadWidth, roadLength);
+            const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x555555 }); // Dark grey road
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -0.1; // Slightly below car
+            ground.receiveShadow = true;
+            scene.add(ground);
+            
+            // "Grass" area
+            const grassGeometry = new THREE.PlaneGeometry(500, roadLength);
+            const grassMaterial = new THREE.MeshLambertMaterial({ color: 0x009900 });
+            const grass = new THREE.Mesh(grassGeometry, grassMaterial);
+            grass.rotation.x = -Math.PI / 2;
+            grass.position.y = -0.2; // Below road
+            grass.receiveShadow = true;
+            scene.add(grass);
+
+
+            // Car
+            const carGeometry = new THREE.BoxGeometry(2, 1.5, 4);
+            const carMaterial = new THREE.MeshLambertMaterial({ color: 0x0077FF }); // Blue car
+            car = new THREE.Mesh(carGeometry, carMaterial);
+            car.position.y = carGeometry.parameters.height / 2;
+            car.castShadow = true;
+            scene.add(car);
+
+            // Add invisible bounding box helper (for collision)
+            car.userData.boundingBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+            car.userData.boundingBox.setFromObject(car); // Initial setup
+
+            // Obstacles
+            const obstacleGeometry = new THREE.BoxGeometry(3, 3, 3);
+            const obstacleMaterial = new THREE.MeshLambertMaterial({ color: 0xFF0000 }); // Red obstacles
+            for (let i = 0; i < obstacleCount; i++) {
+                const obstacle = new THREE.Mesh(obstacleGeometry, obstacleMaterial);
+                obstacle.castShadow = true;
+                obstacle.position.y = obstacleGeometry.parameters.height / 2;
+                // Add bounding box
+                obstacle.userData.boundingBox = new THREE.Box3(new THREE.Vector3(), new THREE.Vector3());
+                scene.add(obstacle);
+                obstacles.push(obstacle);
+            }
+            
+            // Road Lines
+            const lineGeometry = new THREE.BoxGeometry(0.3, 0.1, 5);
+            const lineMaterial = new THREE.MeshLambertMaterial({ color: 0xFFFFFF });
+            for(let i = 0; i < roadLineCount; i++) {
+                const line = new THREE.Mesh(lineGeometry, lineMaterial);
+                line.position.y = 0;
+                scene.add(line);
+                roadLines.push(line);
+            }
+
+            // --- Event Listeners ---
+            window.addEventListener('keydown', (e) => (keys[e.key.toLowerCase()] = true));
+            window.addEventListener('keyup', (e) => (keys[e.key.toLowerCase()] = false));
+            window.addEventListener('resize', onWindowResize, false);
+            startButton.addEventListener('click', startGame);
+        }
+
+        // --- Game Logic ---
+
+        function startGame() {
+            // Reset game state
+            gameState.speed = 0;
+            gameState.distance = 0;
+            gameState.timeLeft = 60.0;
+            gameState.isGameRunning = true;
+            gameState.isGameOver = false;
+
+            // Reset car position
+            car.position.x = 0;
+            car.position.z = 0; // Car stays at z=0, world moves
+            
+            // Reset obstacle positions
+            obstacles.forEach((obstacle, index) => {
+                resetObstacle(obstacle, index * (roadLength / obstacleCount));
+            });
+            
+            // Reset road line positions
+            roadLines.forEach((line, index) => {
+                resetRoadLine(line, index * (roadLength / roadLineCount));
+            });
+
+            // Hide overlay
+            messageOverlay.classList.add('hidden');
+            
+            // Reset UI
+            updateUI();
+            
+            // Start game loop
+            clock.start();
+            animate();
+        }
+
+        function resetObstacle(obstacle, zOffset = 0) {
+            obstacle.position.x = (Math.random() - 0.5) * (roadWidth - 3); // -3 for obstacle width
+            obstacle.position.z = -(Math.random() * roadLength + zOffset); // Place ahead of player
+            // Update bounding box
+            obstacle.userData.boundingBox.setFromObject(obstacle);
+        }
+        
+        function resetRoadLine(line, zOffset = 0) {
+            line.position.x = 0; // Center line
+            line.position.z = -(Math.random() * roadLength + zOffset);
+        }
+
+        function gameOver() {
+            gameState.isGameRunning = false;
+            gameState.isGameOver = true;
+            clock.stop();
+            
+            // Show game over screen
+            messageTitle.innerText = 'Game Over!';
+            messageText.innerHTML = `You drove <strong>${Math.floor(gameState.distance)} m</strong>.<br>Try again!`;
+            startButton.innerText = 'Restart Game';
+            messageOverlay.classList.remove('hidden');
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function updateUI() {
+            timerElement.innerText = `Time: ${Math.ceil(gameState.timeLeft)}`;
+            distanceElement.innerText = `Distance: ${Math.floor(gameState.distance)} m`;
+        }
+
+        // --- Main Game Loop ---
+        function animate() {
+            if (!gameState.isGameRunning) return;
+
+            // Request next frame
+            requestAnimationFrame(animate);
+
+            // Get delta time
+            const deltaTime = clock.getDelta();
+            
+            // --- Update Timer & Distance ---
+            gameState.timeLeft -= deltaTime;
+            gameState.distance += gameState.speed * deltaTime;
+
+            // Check for game end (time)
+            if (gameState.timeLeft <= 0) {
+                gameState.timeLeft = 0;
+                gameOver();
+                updateUI();
+                return; // Stop the loop
+            }
+
+            // --- Handle Input & Movement ---
+            let accelerationThisFrame = 0;
+
+            if (keys.w) {
+                accelerationThisFrame = acceleration;
+            } else if (keys.s) {
+                if (gameState.speed > 0) {
+                    accelerationThisFrame = -braking; // Brake
+                } else {
+                    accelerationThisFrame = -acceleration / 2; // Reverse
+                }
+            } else {
+                // Apply drag
+                if (gameState.speed > 0) {
+                    accelerationThisFrame = -drag;
+                } else if (gameState.speed < 0) {
+                    accelerationThisFrame = drag;
+                }
+            }
+            
+            // Update speed
+            gameState.speed += accelerationThisFrame * deltaTime;
+
+            // Clamp speed
+            gameState.speed = Math.max(-50, Math.min(maxSpeed, gameState.speed)); // Max reverse speed -50
+            
+            // Stop if speed is very low and no input
+            if (Math.abs(gameState.speed) < 0.5 && !keys.w && !keys.s) {
+                gameState.speed = 0;
+            }
+
+            // --- Handle Steering ---
+            // Turning is slower at high speeds
+            const currentTurnRate = baseTurnRate / (1.0 + Math.abs(gameState.speed) * turnDamping);
+            
+            if (keys.a) {
+                car.position.x -= currentTurnRate * deltaTime;
+            }
+            if (keys.d) {
+                car.position.x += currentTurnRate * deltaTime;
+            }
+
+            // Clamp car position to road width
+            const halfRoadWidth = (roadWidth / 2) - (car.geometry.parameters.width / 2);
+            car.position.x = Math.max(-halfRoadWidth, Math.min(halfRoadWidth, car.position.x));
+
+            // --- Update World (Obstacles & Lines) ---
+            const moveSpeed = gameState.speed * deltaTime;
+
+            obstacles.forEach(obstacle => {
+                obstacle.position.z += moveSpeed;
+                obstacle.userData.boundingBox.setFromObject(obstacle); // Update bounding box
+
+                // If obstacle is behind player, reset it
+                if (obstacle.position.z > camera.position.z + 10) {
+                    resetObstacle(obstacle);
+                }
+            });
+            
+            roadLines.forEach(line => {
+                line.position.z += moveSpeed;
+                if(line.position.z > camera.position.z + 10) {
+                    resetRoadLine(line);
+                }
+            });
+
+            // --- Update Camera ---
+            // Smoothly follow the car's x position (lerp)
+            camera.position.x += (car.position.x - camera.position.x) * 0.1;
+            // Settle camera lookAt
+            camera.lookAt(car.position.x, 2, 0);
+
+            // --- Collision Detection ---
+            car.userData.boundingBox.setFromObject(car); // Update car's bounding box
+            
+            for (let obstacle of obstacles) {
+                if (car.userData.boundingBox.intersectsBox(obstacle.userData.boundingBox)) {
+                    // Collision!
+                    gameOver();
+                    break; // Exit loop
+                }
+            }
+            
+            // --- Update UI ---
+            updateUI();
+
+            // --- Render ---
+            renderer.render(scene, camera);
+        }
+
+        // --- Start ---
+        init();
+        
+    </script>
+</body>
+</html>
